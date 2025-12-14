@@ -18,7 +18,7 @@
 ```bash
 # 克隆项目
 git clone <your-repo-url>
-cd SakuraFrp-Qiandao
+cd SakuraFrpQiandao
 
 # 创建虚拟环境
 python -m venv .venv
@@ -43,6 +43,9 @@ BASE_URL=https://api.example.com/v1
 API_KEY=your_api_key
 MODEL=your_model_name
 
+# 最大重试次数 (可选)
+MAX_RETRIES=默认为10
+
 # Chrome 路径（可选）
 CHROME_BINARY_PATH=
 
@@ -57,7 +60,7 @@ HEADLESS=false
 ### 4. 运行脚本
 
 ```bash
-python sakurafrp.py
+python main.py
 ```
 
 ## GitHub Actions 部署
