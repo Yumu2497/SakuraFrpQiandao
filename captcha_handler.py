@@ -117,15 +117,11 @@ class CaptchaHandler:
             # 尝试提取 JSON 内容（处理可能包含其他文本的情况）
             json_match = json.loads(cleaned_str) if cleaned_str.startswith('{') else None
             
-            if not json_match:
+            result = extract_json_from_output(raw_output)
+            if result is None:
                 logger.error("无法从模型输出中提取有效 JSON")
                 return None
-            
-            return json_match
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON 解析失败: {e}")
-            return None
+                 
         except Exception as e:
             logger.error(f"验证码识别失败: {e}", exc_info=True)
             return None
@@ -224,7 +220,53 @@ class CaptchaHandler:
         except Exception as e:
             logger.error(f"点击验证码格子时发生错误: {e}", exc_info=True)
             return False
+   
+    def extract_json_from_output(raw_output: str) -> Optional[Dict]:
+    """
+    从模型原始输出中提取纯 JSON 对象。
+    支持去除：
+        - markdown 代码块标记（```json ... ```）
+        - 特殊标记如 <|begin_of_box|>、<|end_of_box|>
+        - 前后的任意空白、说明文字
+    """
+    # 1. 去除 markdown 代码块标记（不区分大小写）
+    cleaned = re.sub(r'```json\s*|\s*```', '', raw_output, flags=re.IGNORECASE)
     
+    # 2. 去除特殊标记（如 <|...|>）
+    cleaned = re.sub(r'<\|.*?\|>', '', cleaned)
+    
+    # 3. 尝试直接解析整个字符串（如果已经是纯 JSON）
+    try:
+        return json.loads(cleaned.strip())
+    except json.JSONDecodeError:
+        pass
+    
+    # 4. 提取第一个 {...} 或 [...] 结构
+    # 使用正则匹配最外层的 JSON 对象（支持嵌套）
+    # 简单方式：找到第一个 '{' 和与之匹配的最后一个 '}'
+    # 但更好的方式是使用栈匹配，这里用正则匹配最外层花括号（假设没有嵌套复杂字符串）
+    # 为了稳健，使用正则匹配所有花括号内容，取最长的（但可能不准确）
+    # 简单方案：找到第一个 '{' 和最后一个 '}'
+    start = cleaned.find('{')
+    if start == -1:
+        return None
+    end = cleaned.rfind('}')
+    if end == -1:
+        return None
+    json_str = cleaned[start:end+1]
+    
+    # 尝试解析
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        # 如果仍然失败，可能是由于字符串中的单引号或其他问题
+        # 尝试替换单引号为双引号（谨慎，因为值中可能包含单引号）
+        # 这里采用简单替换，实际项目中可考虑 ast.literal_eval 或更安全的解析
+        fixed_str = json_str.replace("'", '"')
+        try:
+            return json.loads(fixed_str)
+        except json.JSONDecodeError:
+            return None
     def _refresh_captcha(self, driver) -> bool:
         """刷新验证码"""
         try:
