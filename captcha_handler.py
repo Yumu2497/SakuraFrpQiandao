@@ -46,8 +46,8 @@ class CaptchaHandler:
                 logger.error("无法提取验证码图片 URL")
                 return ""
         except TimeoutException:
-                logger.info("未检测到 GeeTest 验证码窗口")
-                return False
+            logger.info("未检测到 GeeTest 验证码窗口")
+            return False
     
     def handle_geetest_captcha(self, driver, wait: WebDriverWait) -> bool:
         """处理 GeeTest 九宫格验证码（带重试机制）"""
@@ -88,14 +88,14 @@ class CaptchaHandler:
         """使用视觉模型识别验证码"""
         try:
             prompt = (
-    "任务：识别九宫格验证码中的物品。\n"
-    "1. 从左到右、从上到下依次识别前9个格子中的物品名称。\n"
-    "2. 最后识别左下角的参考图，其名称必须是前9个格子中出现过的名称（统一相似物品名称）。\n"
-    "3. 输出一个纯 JSON 对象，键为 \"1\" 到 \"10\"，值为物品名称。\n"
-    "4. 严格禁止输出任何其他文本、注释、代码块标记（如 ```json）、特殊标记（如 <|begin_of_box|>）、解释说明。\n"
-    "5. 输出必须以 { 开头，以 } 结尾。\n"
-    "示例正确输出：{\"1\":\"牛\",\"2\":\"牛\",\"3\":\"牛\",\"4\":\"牛\",\"5\":\"公交车\",\"6\":\"狗\",\"7\":\"钥匙\",\"8\":\"钥匙\",\"9\":\"轮胎\",\"10\":\"钥匙\"}"
-)
+                "任务：识别九宫格验证码中的物品。\n"
+                "1. 从左到右、从上到下依次识别前9个格子中的物品名称。\n"
+                "2. 最后识别左下角的参考图，其名称必须是前9个格子中出现过的名称（统一相似物品名称）。\n"
+                "3. 输出一个纯 JSON 对象，键为 \"1\" 到 \"10\"，值为物品名称。\n"
+                "4. 严格禁止输出任何其他文本、注释、代码块标记（如 ```json）、特殊标记（如 <|begin_of_box|>）、解释说明。\n"
+                "5. 输出必须以 { 开头，以 } 结尾。\n"
+                "示例正确输出：{\"1\":\"牛\",\"2\":\"牛\",\"3\":\"牛\",\"4\":\"牛\",\"5\":\"公交车\",\"6\":\"狗\",\"7\":\"钥匙\",\"8\":\"钥匙\",\"9\":\"轮胎\",\"10\":\"钥匙\"}"
+            )
             
             response = self.client.chat.completions.create(
                 model=self.config.model,
@@ -109,22 +109,68 @@ class CaptchaHandler:
                 stream=False
             )
             
-            result_content = response.choices[0].message.content
-            logger.info(f"模型原始输出: {result_content}")
+            raw_output = response.choices[0].message.content
+            logger.info(f"模型原始输出: {raw_output}")
             
-            # 清理并解析 JSON
-            cleaned_str = result_content.replace("'", '"')
-            # 尝试提取 JSON 内容（处理可能包含其他文本的情况）
-            json_match = json.loads(cleaned_str) if cleaned_str.startswith('{') else None
-            
-            result = extract_json_from_output(raw_output)
+            # 使用提取函数解析 JSON
+            result = self.extract_json_from_output(raw_output)
             if result is None:
                 logger.error("无法从模型输出中提取有效 JSON")
                 return None
+                
+            # 可选：验证是否包含键 1-10
+            required_keys = [str(i) for i in range(1, 11)]
+            if not all(key in result for key in required_keys):
+                logger.warning(f"JSON 缺少部分键，实际键: {result.keys()}")
+                # 根据情况决定是否继续，这里继续返回
+            
+            return result
                  
         except Exception as e:
             logger.error(f"验证码识别失败: {e}", exc_info=True)
             return None
+    
+    @staticmethod
+    def extract_json_from_output(raw_output: str) -> Optional[Dict]:
+        """
+        从模型原始输出中提取纯 JSON 对象。
+        支持去除：
+            - markdown 代码块标记（```json ... ```）
+            - 特殊标记如 <|begin_of_box|>、<|end_of_box|>
+            - 前后的任意空白、说明文字
+        """
+        # 1. 去除 markdown 代码块标记（不区分大小写）
+        cleaned = re.sub(r'```json\s*|\s*```', '', raw_output, flags=re.IGNORECASE)
+        
+        # 2. 去除特殊标记（如 <|...|>）
+        cleaned = re.sub(r'<\|.*?\|>', '', cleaned)
+        
+        # 3. 尝试直接解析整个字符串（如果已经是纯 JSON）
+        try:
+            return json.loads(cleaned.strip())
+        except json.JSONDecodeError:
+            pass
+        
+        # 4. 提取第一个 {...} 或 [...] 结构
+        start = cleaned.find('{')
+        if start == -1:
+            return None
+        end = cleaned.rfind('}')
+        if end == -1:
+            return None
+        json_str = cleaned[start:end+1]
+        
+        # 尝试解析
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # 如果仍然失败，可能是由于字符串中的单引号或其他问题
+            # 尝试替换单引号为双引号（谨慎，因为值中可能包含单引号）
+            fixed_str = json_str.replace("'", '"')
+            try:
+                return json.loads(fixed_str)
+            except json.JSONDecodeError:
+                return None
     
     def _click_captcha_items(self, driver, recognition_result: Dict) -> bool:
         """
@@ -221,52 +267,6 @@ class CaptchaHandler:
             logger.error(f"点击验证码格子时发生错误: {e}", exc_info=True)
             return False
    
-    def extract_json_from_output(raw_output: str) -> Optional[Dict]:
-    """
-    从模型原始输出中提取纯 JSON 对象。
-    支持去除：
-        - markdown 代码块标记（```json ... ```）
-        - 特殊标记如 <|begin_of_box|>、<|end_of_box|>
-        - 前后的任意空白、说明文字
-    """
-    # 1. 去除 markdown 代码块标记（不区分大小写）
-    cleaned = re.sub(r'```json\s*|\s*```', '', raw_output, flags=re.IGNORECASE)
-    
-    # 2. 去除特殊标记（如 <|...|>）
-    cleaned = re.sub(r'<\|.*?\|>', '', cleaned)
-    
-    # 3. 尝试直接解析整个字符串（如果已经是纯 JSON）
-    try:
-        return json.loads(cleaned.strip())
-    except json.JSONDecodeError:
-        pass
-    
-    # 4. 提取第一个 {...} 或 [...] 结构
-    # 使用正则匹配最外层的 JSON 对象（支持嵌套）
-    # 简单方式：找到第一个 '{' 和与之匹配的最后一个 '}'
-    # 但更好的方式是使用栈匹配，这里用正则匹配最外层花括号（假设没有嵌套复杂字符串）
-    # 为了稳健，使用正则匹配所有花括号内容，取最长的（但可能不准确）
-    # 简单方案：找到第一个 '{' 和最后一个 '}'
-    start = cleaned.find('{')
-    if start == -1:
-        return None
-    end = cleaned.rfind('}')
-    if end == -1:
-        return None
-    json_str = cleaned[start:end+1]
-    
-    # 尝试解析
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        # 如果仍然失败，可能是由于字符串中的单引号或其他问题
-        # 尝试替换单引号为双引号（谨慎，因为值中可能包含单引号）
-        # 这里采用简单替换，实际项目中可考虑 ast.literal_eval 或更安全的解析
-        fixed_str = json_str.replace("'", '"')
-        try:
-            return json.loads(fixed_str)
-        except json.JSONDecodeError:
-            return None
     def _refresh_captcha(self, driver) -> bool:
         """刷新验证码"""
         try:
